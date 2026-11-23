@@ -1,0 +1,16 @@
+**/.git
+**/.gitignore
+**/.github
+**/target/
+**/.mvn
+**/.idea
+**/.vscode
+**/*.iml
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+**/*.md
+**/docker-compose*
+**/compose*
+**/.env*
+

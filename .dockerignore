@@ -1,0 +1,15 @@
+**/.git
+**/.gitignore
+**/.github
+**/target/
+**/.mvn
+**/.idea
+**/.vscode
+**/*.iml
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+**/*.md
+**/.env*
+!.env.example
+
