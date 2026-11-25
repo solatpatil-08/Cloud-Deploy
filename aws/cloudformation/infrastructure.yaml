@@ -1,0 +1,287 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudDeploy - Phase 6 Complete AWS Infrastructure Template
+  Provisions ECR repository, EC2 Security Group (HTTP/HTTPS only, no SSH), IAM Role & Instance Profile,
+  CloudWatch Log Groups with 14-day retention, and EC2 instance with IMDSv2, encrypted gp3 volume,
+  and SHA256-verified Docker Compose bootstrap. All ARNs and endpoints dynamically use AWS::Region and AWS::AccountId.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: prod
+    Description: Environment stage name (e.g. prod, staging, dev)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the security group and EC2 instance will be deployed (select your Default VPC)
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.large
+      - t3.medium
+      - t3.xlarge
+    Description: EC2 Instance Type (t3.large recommended, t3.medium fallback)
+
+  EbsVolumeSize:
+    Type: Number
+    Default: 30
+    Description: EBS Root Volume size in GB (gp3, encrypted)
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
+    Description: Latest Amazon Linux 2023 x86_64 AMI ID
+
+Resources:
+  # ============================================================================
+  # 1. Amazon ECR Private Repository
+  # ============================================================================
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: clouddeploy-task-api
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: MUTABLE
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: clouddeploy-task-api
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # 2. CloudWatch Log Groups (14-day Retention)
+  # ============================================================================
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /clouddeploy/api
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  NginxLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /clouddeploy/nginx
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  PostgresLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /clouddeploy/postgres
+      RetentionInDays: 14
+      Tags:
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # 3. Security Group (CloudDeploy-SG) - Ports 80 & 443 Only (No SSH)
+  # ============================================================================
+  CloudDeploySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: CloudDeploy-SG
+      GroupDescription: CloudDeploy EC2 security group - HTTP (80) and HTTPS (443) only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Allow public HTTP traffic to Nginx reverse proxy
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: Allow public HTTPS traffic to Nginx reverse proxy
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic (ECR pull, SSM session, packages)
+      Tags:
+        - Key: Name
+          Value: CloudDeploy-SG
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  # ============================================================================
+  # 4. IAM Role and Instance Profile (Least Privilege)
+  # ============================================================================
+  CloudDeployEc2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: CloudDeploy-EC2-Role
+      Description: EC2 Instance Role with SSM Session Manager, ECR pull, and CloudWatch write
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CloudDeploy-EC2-Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ECRAuthToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: ECRPullImageLayers
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: !Sub 'arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/clouddeploy-task-api'
+              - Sid: CloudWatchLogsWrite
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/clouddeploy/*'
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/clouddeploy/*:*'
+              - Sid: SSMParameterStoreRead
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/clouddeploy/prod/*'
+              - Sid: KMSDecryptSSMSecrets
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub 'ssm.${AWS::Region}.amazonaws.com'
+      Tags:
+        - Key: Name
+          Value: CloudDeploy-EC2-Role
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  CloudDeployInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: CloudDeploy-EC2-InstanceProfile
+      Roles:
+        - !Ref CloudDeployEc2Role
+
+  # ============================================================================
+  # 5. EC2 Instance (CloudDeploy-Server) - Enforced IMDSv2 and Encrypted gp3
+  # ============================================================================
+  CloudDeployServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      IamInstanceProfile: !Ref CloudDeployInstanceProfile
+      SecurityGroupIds:
+        - !GetAtt CloudDeploySecurityGroup.GroupId
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 1
+        HttpEndpoint: enabled
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref EbsVolumeSize
+            VolumeType: gp3
+            DeleteOnTermination: true
+            Encrypted: true
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          exec > >(tee /var/log/user-data.log) 2>&1
+          set -euo pipefail
+          dnf update -y
+          dnf install -y docker git jq libxcrypt-compat
+          systemctl enable --now docker
+          usermod -aG docker ec2-user
+          COMPOSE_VERSION="v2.32.4"
+          COMPOSE_SHA256="ed1917fb54db184192ea9d0717bcd59e3662ea79db48bff36d3475516c480a6b"
+          DOCKER_PLUGIN_DIR="/usr/local/lib/docker/cli-plugins"
+          mkdir -p "$DOCKER_PLUGIN_DIR"
+          COMPOSE_BIN="${DOCKER_PLUGIN_DIR}/docker-compose"
+          curl -sSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64" -o "$COMPOSE_BIN"
+          echo "${COMPOSE_SHA256}  ${COMPOSE_BIN}" | sha256sum -c -
+          chmod +x "$COMPOSE_BIN"
+          ln -sf "$COMPOSE_BIN" /usr/local/bin/docker-compose
+          systemctl enable --now amazon-ssm-agent
+          mkdir -p /opt/clouddeploy
+          chown -R ec2-user:ec2-user /opt/clouddeploy
+      Tags:
+        - Key: Name
+          Value: CloudDeploy-Server
+        - Key: Project
+          Value: CloudDeploy
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  EcrRepositoryUri:
+    Description: ECR Repository URI for Docker images
+    Value: !GetAtt EcrRepository.RepositoryUri
+    Export:
+      Name: !Sub '${AWS::StackName}-ECR-Uri'
+
+  SecurityGroupId:
+    Description: CloudDeploy Security Group ID
+    Value: !GetAtt CloudDeploySecurityGroup.GroupId
+    Export:
+      Name: !Sub '${AWS::StackName}-SG-Id'
+
+  InstanceId:
+    Description: CloudDeploy EC2 Instance ID
+    Value: !Ref CloudDeployServer
+
+  PublicIp:
+    Description: Public IPv4 Address of CloudDeploy Server
+    Value: !GetAtt CloudDeployServer.PublicIp
