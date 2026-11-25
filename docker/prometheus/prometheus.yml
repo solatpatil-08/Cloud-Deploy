@@ -1,0 +1,46 @@
+# ==============================================================================
+# CloudDeploy - Prometheus Configuration
+# ==============================================================================
+global:
+  scrape_interval: 15s       # Global scrape frequency
+  evaluation_interval: 15s   # Rule evaluation frequency
+  scrape_timeout: 10s
+
+  external_labels:
+    environment: 'production'
+    project: 'clouddeploy'
+
+# ==============================================================================
+# Scrape Configurations
+# ==============================================================================
+scrape_configs:
+  # 1. Spring Boot Application (Actuator Micrometer Metrics)
+  - job_name: 'spring-boot-app'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s     # High-resolution application metrics
+    scrape_timeout: 8s
+    static_configs:
+      - targets: ['app:8080']
+        labels:
+          application: 'clouddeploy-task-manager'
+          instance: 'backend-app-1'
+
+  # 2. Linux Server & Host Metrics (Node Exporter)
+  - job_name: 'node-exporter'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          instance: 'aws-ec2-host'
+          role: 'docker-host'
+
+  # 3. Prometheus Self-Monitoring
+  - job_name: 'prometheus'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus-engine'
+
