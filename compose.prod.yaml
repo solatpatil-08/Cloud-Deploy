@@ -9,9 +9,9 @@ services:
     container_name: clouddeploy-prod-postgres
     restart: always
     environment:
-      POSTGRES_DB: ${DB_NAME:-clouddeploy_db}
-      POSTGRES_USER: ${DB_USERNAME:-clouddeploy_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?Error: DB_PASSWORD must be provided}
+      POSTGRES_DB: "${DB_NAME:-clouddeploy_db}"
+      POSTGRES_USER: "${DB_USERNAME:-clouddeploy_user}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:?Error: DB_PASSWORD must be provided}"
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -41,16 +41,16 @@ services:
   # 2. Spring Boot Application (Pulled from AWS ECR)
   # ============================================================================
   app:
-    image: ${ECR_REGISTRY:?Error: ECR_REGISTRY required}/${ECR_REPOSITORY:?Error: ECR_REPOSITORY required}:${IMAGE_TAG:-latest}
+    image: "${ECR_REGISTRY:?Error: ECR_REGISTRY required}/${ECR_REPOSITORY:?Error: ECR_REPOSITORY required}:${IMAGE_TAG:-latest}"
     container_name: clouddeploy-prod-app
     restart: always
     environment:
       SPRING_PROFILES_ACTIVE: prod
-      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-clouddeploy_db}
-      DB_USERNAME: ${DB_USERNAME:-clouddeploy_user}
-      DB_PASSWORD: ${DB_PASSWORD:?Error: DB_PASSWORD must be provided}
-      JWT_SECRET: ${JWT_SECRET:?Error: JWT_SECRET must be provided}
-      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      DB_URL: "jdbc:postgresql://postgres:5432/${DB_NAME:-clouddeploy_db}"
+      DB_USERNAME: "${DB_USERNAME:-clouddeploy_user}"
+      DB_PASSWORD: "${DB_PASSWORD:?Error: DB_PASSWORD must be provided}"
+      JWT_SECRET: "${JWT_SECRET:?Error: JWT_SECRET must be provided}"
+      JWT_EXPIRATION_MS: "${JWT_EXPIRATION_MS:-86400000}"
       PORT: 8080
       JAVA_OPTS: "-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:InitialRAMPercentage=50.0 -XX:+ExitOnOutOfMemoryError"
     depends_on:
@@ -59,6 +59,7 @@ services:
     networks:
       - frontend-net
       - backend-net
+      - monitoring-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 15s
@@ -120,6 +121,105 @@ services:
         max-size: "20m"
         max-file: "5"
 
+  # ============================================================================
+  # 4. Prometheus Engine (Production)
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: clouddeploy-prod-prometheus
+    restart: always
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ============================================================================
+  # 5. Grafana Dashboard Platform (Production)
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: clouddeploy-prod-grafana
+    restart: always
+    environment:
+      - "GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}"
+      - "GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Error: GRAFANA_ADMIN_PASSWORD required}"
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitoring-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q 'ok' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ============================================================================
+  # 6. Linux Node Exporter (Production)
+  # ============================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: clouddeploy-prod-node-exporter
+    restart: always
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: 64M
+
 # ==============================================================================
 # Persistent Volumes
 # ==============================================================================
@@ -128,6 +228,10 @@ volumes:
     name: clouddeploy_prod_postgres_data
   nginx_logs:
     name: clouddeploy_prod_nginx_logs
+  prometheus_data:
+    name: clouddeploy_prod_prometheus_data
+  grafana_data:
+    name: clouddeploy_prod_grafana_data
 
 # ==============================================================================
 # Isolated Networks
@@ -140,3 +244,6 @@ networks:
     name: clouddeploy_prod_backend_net
     driver: bridge
     internal: true
+  monitoring-net:
+    name: clouddeploy_prod_monitoring_net
+    driver: bridge

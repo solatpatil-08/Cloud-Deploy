@@ -9,15 +9,14 @@ services:
     container_name: clouddeploy-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME:-clouddeploy_db}
-      POSTGRES_USER: ${DB_USERNAME:-clouddeploy_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?Error: DB_PASSWORD must be set in .env}
+      POSTGRES_DB: "${DB_NAME:-clouddeploy_db}"
+      POSTGRES_USER: "${DB_USERNAME:-clouddeploy_user}"
+      POSTGRES_PASSWORD: "${DB_PASSWORD:-ChangeThisToAStrongSecurePassword123!}"
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - backend-net
-    # Zero public port exposure: PostgreSQL is unreachable from host or external networks
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-clouddeploy_user} -d ${DB_NAME:-clouddeploy_db}"]
       interval: 10s
@@ -30,17 +29,17 @@ services:
   # ============================================================================
   app:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: clouddeploy-app
     restart: unless-stopped
     environment:
-      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
-      DB_URL: jdbc:postgresql://postgres:5432/${DB_NAME:-clouddeploy_db}
-      DB_USERNAME: ${DB_USERNAME:-clouddeploy_user}
-      DB_PASSWORD: ${DB_PASSWORD:?Error: DB_PASSWORD must be set in .env}
-      JWT_SECRET: ${JWT_SECRET:?Error: JWT_SECRET must be set in .env}
-      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      SPRING_PROFILES_ACTIVE: "${SPRING_PROFILES_ACTIVE:-prod}"
+      DB_URL: "jdbc:postgresql://postgres:5432/${DB_NAME:-clouddeploy_db}"
+      DB_USERNAME: "${DB_USERNAME:-clouddeploy_user}"
+      DB_PASSWORD: "${DB_PASSWORD:-ChangeThisToAStrongSecurePassword123!}"
+      JWT_SECRET: "${JWT_SECRET:-404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}"
+      JWT_EXPIRATION_MS: "${JWT_EXPIRATION_MS:-86400000}"
       PORT: 8080
     depends_on:
       postgres:
@@ -48,7 +47,7 @@ services:
     networks:
       - frontend-net
       - backend-net
-    # Zero host port mapping: All application traffic is reverse-proxied by Nginx
+      - monitoring-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
       interval: 15s
@@ -84,17 +83,98 @@ services:
       retries: 3
       start_period: 10s
 
+  # ============================================================================
+  # 4. Prometheus Metrics Scraper & Time-Series Database
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: clouddeploy-prometheus
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    networks:
+      - monitoring-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # 5. Grafana Metrics Visualization & Provisioned Dashboards
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: clouddeploy-grafana
+    restart: unless-stopped
+    environment:
+      - "GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}"
+      - "GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-AdminSecurePass2026!}"
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PANELS_ENABLE_ALPHA=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitoring-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q 'ok' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ============================================================================
+  # 6. Linux Host & Hardware Metrics Exporter (Node Exporter)
+  # ============================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: clouddeploy-node-exporter
+    restart: unless-stopped
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    networks:
+      - monitoring-net
+
 # ==============================================================================
-# Persistent Volumes
+# Persistent Storage Volumes
 # ==============================================================================
 volumes:
   postgres_data:
     name: clouddeploy_postgres_data
   nginx_logs:
     name: clouddeploy_nginx_logs
+  prometheus_data:
+    name: clouddeploy_prometheus_data
+  grafana_data:
+    name: clouddeploy_grafana_data
 
 # ==============================================================================
-# Network Topology
+# Isolated Network Topology
 # ==============================================================================
 networks:
   frontend-net:
@@ -104,3 +184,6 @@ networks:
     name: clouddeploy_backend_net
     driver: bridge
     internal: true
+  monitoring-net:
+    name: clouddeploy_monitoring_net
+    driver: bridge
