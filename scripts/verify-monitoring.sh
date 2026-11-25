@@ -75,6 +75,7 @@ PROM_NGINX=$(curl -s -o /dev/null -w "%{http_code}" http://localhost/actuator/pr
 GRAF_NGINX=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/ || true)
 
 echo "Public Nginx /actuator/prometheus status: $PROM_NGINX (Expected: 403 Forbidden)"
+echo "Grafana local loopback status: $GRAF_NGINX (Expected: 200/302 OK)"
 if [ "$PROM_NGINX" = "403" ]; then
     echo -e "${GREEN}[PASS] Prometheus metrics blocked from public exposure!${NC}"
 fi

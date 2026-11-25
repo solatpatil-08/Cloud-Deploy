@@ -32,10 +32,12 @@ services:
           cpus: "0.25"
           memory: 256M
     logging:
-      driver: "json-file"
+      driver: "awslogs"
       options:
-        max-size: "20m"
-        max-file: "5"
+        awslogs-region: "${AWS_REGION:-ap-south-1}"
+        awslogs-group: "/clouddeploy/postgres"
+        awslogs-stream: "postgres-${INSTANCE_ID:-ec2}"
+        awslogs-create-group: "false"
 
   # ============================================================================
   # 2. Spring Boot Application (Pulled from AWS ECR)
@@ -75,10 +77,12 @@ services:
           cpus: "0.5"
           memory: 512M
     logging:
-      driver: "json-file"
+      driver: "awslogs"
       options:
-        max-size: "50m"
-        max-file: "5"
+        awslogs-region: "${AWS_REGION:-ap-south-1}"
+        awslogs-group: "/clouddeploy/api"
+        awslogs-stream: "api-${INSTANCE_ID:-ec2}"
+        awslogs-create-group: "false"
 
   # ============================================================================
   # 3. Nginx Reverse Proxy Service (Production)
@@ -116,10 +120,12 @@ services:
           cpus: "0.1"
           memory: 64M
     logging:
-      driver: "json-file"
+      driver: "awslogs"
       options:
-        max-size: "20m"
-        max-file: "5"
+        awslogs-region: "${AWS_REGION:-ap-south-1}"
+        awslogs-group: "/clouddeploy/nginx"
+        awslogs-stream: "nginx-${INSTANCE_ID:-ec2}"
+        awslogs-create-group: "false"
 
   # ============================================================================
   # 4. Prometheus Engine (Production)
