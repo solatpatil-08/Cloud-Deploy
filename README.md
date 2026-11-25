@@ -12,7 +12,7 @@ CloudDeploy is an industry-grade deployment platform featuring a containerized S
 * **Security:** Spring Security 6, JWT Authentication (HMAC-SHA256 via JJWT 0.12), BCrypt
 * **Reverse Proxy:** Nginx 1.27 (Rate limiting, security headers, SSL-ready)
 * **Containerization:** Docker (Multi-stage build, non-root user), Docker Compose
-* **Observability:** Spring Boot Actuator, Micrometer Prometheus, Structured JSON Logback
+* **Observability:** Prometheus 2.53, Grafana 11.1, Node Exporter, Micrometer, Structured JSON Logback
 * **Cloud Infrastructure (Upcoming Phases):** AWS EC2, AWS ECR, AWS Systems Manager (SSM), AWS IAM (OIDC)
 * **CI/CD (Upcoming Phases):** GitHub Actions with automated rollback
 
@@ -43,6 +43,12 @@ CloudDeploy is an industry-grade deployment platform featuring a containerized S
 * Internal health probe mapped to `/health`.
 * Modern TLSv1.2 & TLSv1.3 configuration snippets ready for SSL certificate activation.
 
+### Phase 5: Observability Stack (Prometheus, Grafana & Node Exporter)
+* **Prometheus:** 10s scraping of Spring Boot Actuator, 15s of Node Exporter, 15-day persistent retention.
+* **Grafana:** Automated datasource and dashboard provisioning.
+* **16 Monitoring Panels:** Application uptime, request rates, HTTP status codes, latency, JVM heap/CPU/threads, GC pause time, EC2 host CPU, memory, disk, and load.
+* **Security Posture:** Ports bound to loopback `127.0.0.1` (no public exposure); secure access via AWS SSM port forwarding.
+
 ---
 
 ## 📡 API Endpoints
@@ -61,7 +67,7 @@ CloudDeploy is an industry-grade deployment platform featuring a containerized S
 
 ### Monitoring & Gateway Probes
 * `GET /health` - Public health probe through Nginx
-* `GET /actuator/prometheus` - Prometheus scrape endpoint (internal network only)
+* `GET /actuator/prometheus` - Internal Prometheus metrics scrape endpoint
 
 ---
 
@@ -78,7 +84,11 @@ cp .env.example .env
 # 3. Start containers
 docker compose up -d
 
-# 4. Run automated test suite
-bash scripts/test-nginx-proxy.sh   # Linux/macOS
-.\scripts\test-nginx-proxy.ps1      # Windows PowerShell
+# 4. Generate sample traffic
+bash scripts/generate-traffic.sh 15        # Linux/macOS
+.\scripts\generate-traffic.ps1 -Cycles 15  # Windows PowerShell
+
+# 5. Access Grafana Dashboards
+# URL: http://localhost:3000
+# User: admin | Pass: ChangeThisGrafanaPassword2026!
 ```
